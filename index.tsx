@@ -1,64 +1,106 @@
 /*
- * Vencord Plugin: TemporaryHideMessage
- * Temporarily hides a message from view until Discord is reloaded.
- * © 2025 You | MIT License
+ * Vencord Plugin: MessageFormatter
+ * Adds context menu options to format your own message (spoiler, bold, quote, strikethrough).
  */
 
 import definePlugin from "@utils/types";
-import { React, Menu } from "@webpack/common";
+import { Menu, RestAPI, showToast, Toasts, UserStore } from "@webpack/common";
 import { findGroupChildrenByChildId } from "@api/ContextMenu";
 import { Message } from "@vencord/discord-types";
 
-// In-memory Set of hidden message IDs (cleared on reload)
-const hiddenMessages = new Set<string>();
+function addFormatOptions(children: any[], props: { message: Message }) {
+    const message = props?.message;
+    const currentUser = UserStore.getCurrentUser();
+
+    if (!message || message.author.id !== currentUser.id) return;
+
+    const group = findGroupChildrenByChildId("message-actions", children);
+
+    const formattingOptions = [
+        {
+            id: "vc-format-spoiler",
+            label: "Spoiler",
+            condition: () => !(message.content.startsWith("||") && message.content.endsWith("||")),
+            format: (content: string) => `||${content}||`,
+            toast: "Your message is now a spoiler!",
+        },
+        {
+            id: "vc-format-bold",
+            label: "Bold",
+            condition: () => !(message.content.startsWith("**") && message.content.endsWith("**")),
+            format: (content: string) => `**${content}**`,
+            toast: "Boldified!",
+        },
+        {
+            id: "vc-format-quote",
+            label: "Quote",
+            condition: () => !message.content.startsWith("> "),
+            format: (content: string) => `> ${content}`,
+            toast: "Quoted!",
+        },
+        {
+            id: "vc-format-strike",
+            label: "Strikethrough",
+            condition: () => !(message.content.startsWith("~~") && message.content.endsWith("~~")),
+            format: (content: string) => `~~${content}~~`,
+            toast: "Struck it out!",
+        },
+    ];
+
+    const formatMenuItems = formattingOptions
+        .filter(opt => opt.condition())
+        .map(opt => (
+            <Menu.MenuItem
+                id={opt.id}
+                label={opt.label}
+                action={() =>
+                    formatMessage(
+                        message.channel_id,
+                        message.id,
+                        message.content,
+                        opt.format,
+                        opt.toast
+                    )
+                }
+            />
+        ));
+
+    if (group) {
+        group.children.push(...formatMenuItems);
+    } else {
+        children.push(...formatMenuItems);
+    }
+}
 
 /**
- * Adds "Hide Message (Temporary)" to the right-click context menu on messages
+ * Edit the message with a given format
  */
-function addHideMessageContextItem(children: any[], props: { message: Message }) {
-    const group = findGroupChildrenByChildId("message-actions", children);
-    if (!group || !props?.message?.id) return;
+async function formatMessage(
+    channelId: string,
+    messageId: string,
+    content: string,
+    formatFn: (c: string) => string,
+    toastMsg: string
+) {
+    const newContent = formatFn(content);
 
-    const messageId = props.message.id;
-
-    group.children.push(
-        <Menu.MenuItem
-            id="vc-hide-message-temporary"
-            label="Hide Message (Temporary)"
-            action={() => {
-                hiddenMessages.add(messageId);
-            }}
-        />
-    );
+    try {
+        await RestAPI.patch({
+            url: `/channels/${channelId}/messages/${messageId}`,
+            body: { content: newContent },
+        });
+        showToast(toastMsg, Toasts.Type.SUCCESS);
+    } catch (err) {
+        console.error("[MessageFormatter] Failed to edit message:", err);
+        showToast("Failed to edit message.", Toasts.Type.FAILURE);
+    }
 }
 
 export default definePlugin({
-    name: "TemporaryHideMessage",
-    description: "Temporarily hides messages until the client reloads.",
+    name: "MessageFormatter",
+    description: "Adds context menu options to wrap or prefix your own messages with markdown (spoiler, bold, quote, strikethrough).",
     authors: [{ id: 1169111190824308768n, name: "Akuma" }],
-
     contextMenus: {
-        message: addHideMessageContextItem,
+        message: addFormatOptions,
     },
-
-    patches: [
-        {
-            find: "children.map((msg,index)=>",
-            replacement: {
-                // Injects filtering logic into message rendering
-                match: /children\.map\(\(msg,index\)=>/,
-                replace: "children = children.filter(msg => !globalThis.vcHiddenMessages?.has(msg.id)); $&"
-            }
-        }
-    ],
-
-    onLoad() {
-        // Expose the hidden message set globally for patch access
-        globalThis.vcHiddenMessages = hiddenMessages;
-    },
-
-    onUnload() {
-        // Clean up global reference
-        delete globalThis.vcHiddenMessages;
-    }
 });
